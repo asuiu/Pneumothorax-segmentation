@@ -1,0 +1,21 @@
+-e git+https://github.com/asuiu/Mask_RCNN#egg=mrcnn
+# Shapely
+# Shapely has a problem when installing on windows, so use `conda install shapely`
+
+pydicom
+jupyter
+numpy
+pandas
+matplotlib
+mlxtend
+opencv-python
+six
+scipy
+Pillow
+scikit-image
+imageio
+imgaug
+tqdm
+tensorflow
+keras
+mudicom
