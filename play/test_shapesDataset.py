@@ -8,7 +8,8 @@ from unittest import TestCase, main
 
 import mrcnn.model as modellib
 
-from train_shapes_from_tutorial import ShapesDataset, ShapesConfig
+
+from train_shapes_from_tutorial import MaskRCNNAuxFeatures, ShapesDataset, ShapesConfig
 
 __author__ = 'ASU'
 
@@ -23,7 +24,7 @@ class TestShapesConfig(TestCase):
         ROOT_DIR = os.path.abspath("pretrainings/")
         MODEL_DIR = os.path.join(ROOT_DIR, "logs")
         # Create model in training mode
-        model = modellib.MaskRCNN(mode="training", config=config,
+        model = MaskRCNNAuxFeatures(mode="training", config=config,
                                   model_dir=MODEL_DIR)
 
         train_generator = modellib.data_generator(dataset_train, model.config, shuffle=True,
