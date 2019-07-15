@@ -4,6 +4,7 @@
 # Purpose: 
 # Created: 7/12/2019
 from os.path import abspath, join, basename
+from typing import List
 
 import keras
 from pandas import DataFrame
@@ -160,7 +161,7 @@ class DetectorDataset(utils.Dataset):
     """Dataset class for training our dataset.
     """
 
-    def __init__(self, image_fps, image_annotations, orig_height, orig_width):
+    def __init__(self, image_fps: List[str], image_annotations: DataFrame, orig_height, orig_width):
         super().__init__(self)
 
         # Add classes
@@ -177,6 +178,20 @@ class DetectorDataset(utils.Dataset):
         info = self.image_info[image_id]
         return info['path']
 
+    def get_metadata_from_dicom(self, ds):
+        age = int(ds[(0x0010, 0x1010)].value)
+        view_position = {'PA': 0, 'AP': 255}[ds[(0x0018, 0x5101)].value]
+        sex = {'M': 0, 'F': 255}[ds[((0x0010, 0x0040))].value]
+        return (age, view_position, sex)
+
+    def augument_image_with_metadata(self, ds: pydicom.dataset.FileDataset, image: np.ndarray):
+        # Add metadata to the second layer
+        md = self.get_metadata_from_dicom(ds)
+        for i in range(image.shape[0]):
+            for j in range(image.shape[1]):
+                image[i, j, 1] = md[j % 3]
+        return image
+
     def load_image(self, image_id):
         info = self.image_info[image_id]
         fp = info['path']
@@ -185,6 +200,9 @@ class DetectorDataset(utils.Dataset):
         # If grayscale. Convert to RGB for consistency.
         if len(image.shape) != 3 or image.shape[2] != 3:
             image = np.stack((image,) * 3, -1)
+
+        self.augument_image_with_metadata(ds, image)
+
         return image
 
     def load_mask(self, image_id):
@@ -382,7 +400,7 @@ def load_data(data_dir: str, first=None):
     # %%
     # training dataset
     SEGMENTATION = data_dir + '/train-rle.csv'
-    image_annotations = pd.read_csv(SEGMENTATION)
+    image_annotations: DataFrame = pd.read_csv(SEGMENTATION)
 
     if bool(first) is not None:
         image_annotations = image_annotations.head(first)
@@ -432,10 +450,6 @@ def normal_train():
 
     print(len(image_fps_train), len(image_fps_val), len(test_names))
 
-    ## Examine the annotation data
-    ds = pydicom.read_file(train_names[0])  # read dicom image from filepath
-    image = ds.pixel_array  # get image array
-    # %%
     # Original image size: 1024 x 1024
     ORIG_SIZE = 1024
 
