@@ -3,12 +3,6 @@
 # Author: ASU --<andrei.suiu@gmail.com>
 # Purpose: 
 # Created: 7/12/2019
-from os.path import abspath, join, basename
-from typing import List
-
-import keras
-from pandas import DataFrame
-
 __author__ = 'ASU'
 
 import gc
@@ -17,20 +11,26 @@ import os
 import random
 import sys
 import warnings
+from os.path import abspath, join, basename
+from typing import List
 
 import cv2
+import keras
 import matplotlib.pyplot as plt
 import mrcnn.model as modellib
-import numpy as np  # linear algebra
-import pandas as pd  # data processing, CSV file I/O (e.g. pd.read_csv)
+import numpy as np
+import pandas as pd
 import pydicom
 from imgaug import augmenters as iaa
 from mrcnn import utils
 from mrcnn import visualize
 from mrcnn.config import Config
+from pandas import DataFrame
 from skimage.morphology import label
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm_notebook
+
+from mask_functions import rle2mask, mask2rle
 
 debug = False
 
@@ -39,7 +39,6 @@ warnings.filterwarnings("ignore")
 RT = 'D:\work\Projects\ML\Pneumothorax'
 to_root = lambda _: os.path.join(RT, _)
 sys.path.insert(0, to_root('/kaggle/input/siim-acr-pneumothorax-segmentation'))
-from mask_functions import rle2mask, mask2rle
 
 # %%
 DATA_DIR = to_root(r'D:\kaggle\input\siim-acr-pneumothorax-segmentation-data\pneumothorax')
@@ -178,15 +177,17 @@ class DetectorDataset(utils.Dataset):
         info = self.image_info[image_id]
         return info['path']
 
-    def get_metadata_from_dicom(self, ds):
+    @staticmethod
+    def get_metadata_from_dicom(ds):
         age = int(ds[(0x0010, 0x1010)].value)
         view_position = {'PA': 0, 'AP': 255}[ds[(0x0018, 0x5101)].value]
         sex = {'M': 0, 'F': 255}[ds[((0x0010, 0x0040))].value]
         return (age, view_position, sex)
 
-    def augument_image_with_metadata(self, ds: pydicom.dataset.FileDataset, image: np.ndarray):
+    @staticmethod
+    def augument_image_with_metadata(ds: pydicom.dataset.FileDataset, image: np.ndarray):
         # Add metadata to the second layer
-        md = self.get_metadata_from_dicom(ds)
+        md = DetectorDataset.get_metadata_from_dicom(ds)
         for i in range(image.shape[0]):
             for j in range(image.shape[1]):
                 image[i, j, 1] = md[j % 3]
@@ -256,6 +257,78 @@ def masks_as_color(rle_list, shape):
         if isinstance(mask, str) and mask != '-1':
             all_masks[:, :] += scale(i) * rle2mask(mask, shape[0], shape[1]).T
     return all_masks
+
+def predict_true(image_fps, dataset:DetectorDataset, model: modellib.MaskRCNN, config: Config, filepath='submission.csv', orig_size = 1024):
+    min_conf = config.DETECTION_MIN_CONFIDENCE
+    # assume square image
+    resize_factor = orig_size / config.IMAGE_SHAPE[0]
+    with open(filepath, 'w') as file:
+        file.write("ImageId,EncodedPixels\n")
+
+        for fp in tqdm_notebook(image_fps):
+            image_id = fp.split('/')[-1][:-4]
+            maks_written = 0
+
+            ds = pydicom.read_file(fp)
+            image = ds.pixel_array
+            # If grayscale. Convert to RGB for consistency.
+            if len(image.shape) != 3 or image.shape[2] != 3:
+                image = np.stack((image,) * 3, -1)
+
+            image = DetectorDataset.augument_image_with_metadata(ds, image)
+
+            results = model.detect([image])  # , verbose=1)
+            r = results[0]
+
+
+            if image_id in positives.index:
+                ds = pydicom.read_file(fp)
+                image = ds.pixel_array
+                # If grayscale. Convert to RGB for consistency.
+                if len(image.shape) != 3 or image.shape[2] != 3:
+                    image = np.stack((image,) * 3, -1)
+                image, window, scale, padding, crop = utils.resize_image(
+                    image,
+                    min_dim=config.IMAGE_MIN_DIM,
+                    min_scale=config.IMAGE_MIN_SCALE,
+                    max_dim=config.IMAGE_MAX_DIM,
+                    mode=config.IMAGE_RESIZE_MODE)
+
+                results = model.detect([image])
+                r = results[0]
+
+                #                 assert( len(r['rois']) == len(r['class_ids']) == len(r['scores']) )
+                n_positives = positives.loc[image_id].N
+                num_instances = min(len(r['rois']), n_positives)
+
+                for i in range(num_instances):
+                    if r['scores'][i] > min_conf and np.sum(r['masks'][..., i]) > 1:
+                        mask = r['masks'][..., i].T * 255
+                        #                         print(len(r['rois']), r['scores'][i], r['rois'][i], r['masks'].shape)
+                        #                         print(mask.shape, np.max(mask), np.stack((mask,) * 3, -1).shape)
+                        mask, _, _, _, _ = utils.resize_image(
+                            np.stack((mask,) * 3, -1),  # requires 3 channels
+                            min_dim=ORIG_SIZE,
+                            min_scale=config.IMAGE_MIN_SCALE,
+                            max_dim=ORIG_SIZE,
+                            mode=config.IMAGE_RESIZE_MODE)
+                        mask = (mask[..., 0] > 0) * 255
+                        #                         print(mask.shape)
+                        #                         plt.imshow(mask, cmap=get_cmap('jet'))
+                        file.write(image_id + "," + mask2rle(mask, ORIG_SIZE, ORIG_SIZE) + "\n")
+                        maks_written += 1
+
+                # fill up remaining masks
+                for i in range(n_positives - maks_written):
+                    padding = 88750
+                    file.write(image_id + f",{padding} {ORIG_SIZE * ORIG_SIZE - padding * 2}\n")
+                    maks_written += 1
+
+            #                 assert n_positives == maks_written
+            #                 print(image_id, n_positives, num_instances, maks_written)
+
+            if maks_written == 0:
+                file.write(image_id + ",-1\n")  ## no pneumothorax
 
 
 def predict(image_fps, config: Config, filepath='submission.csv'):
